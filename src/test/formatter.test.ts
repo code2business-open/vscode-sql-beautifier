@@ -204,11 +204,11 @@ test('keeps literal and block comment contents when removing blank lines', () =>
     assert.doesNotMatch(output, /\*\/\n\n/);
 });
 
-test('file ignore applies before tokenizing invalid SQL, including selections', () => {
+test('file ignore applies before tokenizing invalid SQL for whole-document formatting', () => {
     const input = '\uFEFF\r\n \t-- sql-beautifier-ignore-file  \r\nselect \'unterminated';
     const settings = { preserveComments: false, preserveBlankLines: false };
     assert.deepEqual(formatSqlResult(input, settings), { sql: input });
-    assert.deepEqual(selectText(input, "select 'unterminated", settings), { sql: "select 'unterminated" });
+    assert.match(selectText(input, "select 'unterminated", settings).error ?? '', /Unterminated/);
     const late = 'select 1;\n-- sql-beautifier-ignore-file\nselect 2;';
     assert.equal(formatSql(late), 'SELECT\n    1;\n\n-- sql-beautifier-ignore-file\nSELECT\n    2;');
 });
@@ -281,13 +281,42 @@ test('preserves nested clause selection spacing and surrounding text', () => {
     assert.deepEqual(selectText(input, selected, { preserveBlankLines: false }), { sql: 'WHERE\n      a = 1\n      AND b = 2' });
 });
 
-test('resolves ignored regions using the full document for selections', () => {
+test('explicit selections override statement ignore without editing outside the selection', () => {
     const region = '  -- sql-beautifier-ignore\nselect    1;';
     const input = 'select 0;\n' + region + '\nselect 2;\nselect 3;';
-    assert.deepEqual(selectText(input, 'select    1;'), { sql: 'select    1;' });
-    assert.deepEqual(selectText(input, 'lect    1'), { sql: 'lect    1' });
-    assert.deepEqual(selectText(input, region + '\nselect 2;'), { sql: region + '\n\nSELECT\n    2;' });
-    assert.match(selectText(input, 'select    1;\nselect 2;').error ?? '', /cuts through an ignored SQL statement/);
+    assert.deepEqual(selectText(input, 'select    1;'), { sql: 'SELECT\n    1;' });
+    assert.deepEqual(selectText(input, 'select    1;\nselect 2;'), { sql: 'SELECT\n    1;\n\nSELECT\n    2;' });
+    const fragment = region + '\nselect 2;';
+    const result = selectText(input, fragment, { preserveComments: false });
+    assert.deepEqual(result, { sql: '  -- sql-beautifier-ignore\nSELECT\n    1;\n\nSELECT\n    2;' });
+    assert.equal(input.replace(fragment, result.sql), 'select 0;\n' + result.sql + '\nselect 3;');
+    const invalid = selectText(input, 'lect    1');
+    assert.equal(invalid.sql, 'lect    1');
+    assert.match(invalid.error ?? '', /cuts through a SQL token/);
+});
+
+test('explicit selections override file ignore and can format a whole clause', () => {
+    const marker = '-- sql-beautifier-ignore-file';
+    const input = marker + '\nselect a from t where a=1 and b=2;\nselect 2;';
+    const selection = 'where a=1 and b=2';
+    const replacement = 'WHERE\n    a = 1\n    AND b = 2';
+    assert.deepEqual(selectText(input, selection), { sql: replacement });
+    assert.deepEqual(selectText(input.replace(marker, '-- sql-beautifier-ignore'), selection), { sql: replacement });
+    const fragment = marker + '\nselect a from t where a=1 and b=2;';
+    assert.deepEqual(selectText(input, fragment, { preserveComments: false }),
+        { sql: marker + '\nSELECT\n    a\nFROM\n    t\n' + replacement + ';' });
+    const invalid = selectText(input, 'where a=1');
+    assert.equal(invalid.sql, 'where a=1');
+    assert.match(invalid.error ?? '', /whole clauses/);
+    assert.equal(formatSql(input), input);
+});
+
+test('selecting the whole file explicitly overrides both directives and retains them', () => {
+    const input = '\n-- sql-beautifier-ignore-file\nselect 1;\n-- sql-beautifier-ignore\nselect   2;\n';
+    const expected = '\n-- sql-beautifier-ignore-file\nSELECT\n    1;\n\n-- sql-beautifier-ignore\nSELECT\n    2;\n';
+    assert.deepEqual(formatSqlSelection(input, 0, input.length, { preserveComments: false }), { sql: expected });
+    assert.deepEqual(formatSqlSelection(expected, 0, expected.length, { preserveComments: false }), { sql: expected });
+    assert.equal(formatSql(input, { preserveComments: false }), input);
 });
 
 test('formats selected statements and clauses around a section divider', () => {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Let explicit SQL selections override ignore comments while keeping both directives in place for whole-file formatting.
+
 ## 0.1.4
 
 - Preserve existing blank lines by default and allow disabling it with `sqlBeautifier.preserveBlankLines`.

@@ -3,7 +3,7 @@
 	"displayName": "SQL Beautifier Pro",
 	"icon": "images/icon.png",
 	"description": "A local, token-aware SQL formatter for MySQL and MariaDB.",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"author": "Code2Business.com",
 	"publisher": "code2business",
 	"license": "MIT",

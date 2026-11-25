@@ -16,7 +16,7 @@ In a SQL editor, the standard formatting shortcut formats the highlight if there
 
 Consecutive top-level statements have at least one blank line between them. Existing blank lines are preserved by default. Standalone dashed dividers before or between statements become valid MySQL line comments.
 
-Put `-- sql-beautifier-ignore` on its own line immediately before a top-level statement to keep the directive and statement as written. To skip formatting a whole file, use `-- sql-beautifier-ignore-file` as the first nonblank line. Both directives also apply to Format Selection.
+Put `-- sql-beautifier-ignore` on its own line immediately before a top-level statement to keep the directive and statement as written during whole-file formatting. To skip formatting a whole file, use `-- sql-beautifier-ignore-file` as the first nonblank line. To override either directive, highlight a complete statement or whole clause and format the selection. Select All also works with selection-formatting commands. Both directives stay in place for Format Document and whole-file Format on Save.
 
 To select this extension as the default SQL formatter and enable format on save:
 

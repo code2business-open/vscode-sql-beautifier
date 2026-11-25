@@ -42,6 +42,13 @@ interface SelectionTrace {
     lineStarts: number[];
 }
 
+interface FormatBehavior {
+    inSelection?: boolean;
+    overrideIgnore?: boolean;
+}
+
+const selectionBehavior: FormatBehavior = { inSelection: true, overrideIgnore: true };
+
 const hasStatementContent = (nodes: Node[]): boolean =>
     nodes.some(node => node.kind !== 'comment' || isExecutableComment(node));
 
@@ -63,17 +70,24 @@ class Formatter {
     private readonly before = new Map<number, string>();
     private readonly after = new Map<number, string>();
     private readonly aliases = new Set<number>();
+    private readonly ignoreDirectives = new Set<number>();
 
     constructor(private readonly settings: FormatterSettings, private readonly eol: string, private readonly source: string,
         private readonly trace?: SelectionTrace) {
         this.writer = new Writer(settings, eol);
     }
 
-    format(inputTokens: Token[], inSelection = false): string {
+    format(inputTokens: Token[], { inSelection = false, overrideIgnore = false }: FormatBehavior): string {
         if (inputTokens.length === 0) return this.source;
         assertSqlMode(inputTokens);
         const { parts, tokens } = parse(inputTokens, this.source);
-        const containsIgnored = parts.some(part => !('kind' in part) && part.ignored);
+        if (overrideIgnore) {
+            if (ignoresFile(this.source)) this.ignoreDirectives.add(tokens[0].start);
+            for (const part of parts) {
+                if (!('kind' in part) && part.ignored) this.ignoreDirectives.add(part.ignored.directive.start);
+            }
+        }
+        const containsIgnored = !overrideIgnore && parts.some(part => !('kind' in part) && part.ignored);
         const lastStatement = parts.findLast(part => !('kind' in part) && hasStatementContent(part.nodes));
         const adjacent = new Set<number>();
         if (inSelection && parts.some(part => 'kind' in part || part.customDelimiter)) {
@@ -98,7 +112,7 @@ class Formatter {
             const substantive = hasStatementContent(part.nodes);
             if (precededByStatement && substantive) this.writer.blankLine();
             else this.writer.newline();
-            this.statement(part, part === lastStatement, adjacent);
+            this.statement(part, part === lastStatement, adjacent, overrideIgnore);
             precededByStatement ||= substantive;
         }
 
@@ -141,9 +155,9 @@ class Formatter {
         return spans;
     }
 
-    private statement(part: Statement, last: boolean, adjacent: Set<number>): void {
+    private statement(part: Statement, last: boolean, adjacent: Set<number>, overrideIgnore: boolean): void {
         const nodes = part.nodes.filter(node => node.kind === 'group' || !adjacent.has(node.start));
-        if (part.ignored) {
+        if (part.ignored && !overrideIgnore) {
             const prefix = nodes.slice(0, nodes.indexOf(part.ignored.directive));
             this.sequence(prefix, 0, 'expression');
             this.writer.newline();
@@ -650,7 +664,7 @@ class Formatter {
     }
 
     private comment(token: Token, level: number): void {
-        if (!this.settings.preserveComments && !isProtectedComment(token)) {
+        if (!this.settings.preserveComments && !isProtectedComment(token) && !this.ignoreDirectives.has(token.start)) {
             this.replacements.set(token.start, '');
             return;
         }
@@ -672,8 +686,8 @@ function settingsWithDefaults(options: Partial<FormatterSettings>): FormatterSet
     return settings;
 }
 
-function formatWithEol(input: string, options: Partial<FormatterSettings>, inSelection: boolean, preferredEol?: string): FormatResult {
-    if (!inSelection && ignoresFile(input)) return { sql: input };
+function formatWithEol(input: string, options: Partial<FormatterSettings>, behavior: FormatBehavior, preferredEol?: string): FormatResult {
+    if (!behavior.inSelection && !behavior.overrideIgnore && ignoresFile(input)) return { sql: input };
     try {
         const settings = settingsWithDefaults(options);
         const bom = input.startsWith('\uFEFF') ? '\uFEFF' : '';
@@ -681,8 +695,8 @@ function formatWithEol(input: string, options: Partial<FormatterSettings>, inSel
         const tokens = tokenize(source);
         if (!tokens.length) return { sql: input };
         const eol = preferredEol ?? source.match(/\r\n|\r|\n/)?.[0] ?? '\n';
-        const output = new Formatter(settings, eol, source).format(tokens, inSelection);
-        const repeated = new Formatter(settings, eol, output).format(tokenize(output), inSelection);
+        const output = new Formatter(settings, eol, source).format(tokens, behavior);
+        const repeated = new Formatter(settings, eol, output).format(tokenize(output), behavior);
         if (output !== repeated) throw new SqlFormatError('Formatting this SQL would produce an unstable layout.');
         const finalNewline = !settings.preserveBlankLines && output
             && /(?:\r\n|\r|\n)[ \t\r\n]*$/.test(source) && !/(?:\r\n|\r|\n)[ \t\r\n]*$/.test(output) ? eol : '';
@@ -694,7 +708,7 @@ function formatWithEol(input: string, options: Partial<FormatterSettings>, inSel
 }
 
 export function formatSqlResult(input: string, options: Partial<FormatterSettings> = {}, inSelection = false): FormatResult {
-    return formatWithEol(input, options, inSelection);
+    return formatWithEol(input, options, { inSelection });
 }
 
 function indentOfLine(source: string, offset: number): string {
@@ -725,7 +739,7 @@ function clauseSelection(source: string, selected: Token[], owner: Statement, to
     const end = owner.end?.end ?? tokenEnd(lastNode);
     const eol = source.match(/\r\n|\r|\n/)?.[0] ?? '\n';
     const formatter = new Formatter({ ...settings, trailingSemicolon: 'preserve' }, eol, source, trace);
-    const output = formatter.format(tokens.filter(token => token.start >= start && token.end <= end), true);
+    const output = formatter.format(tokens.filter(token => token.start >= start && token.end <= end), selectionBehavior);
     const syntax = selected.filter(token => token.kind !== 'comment' || isExecutableComment(token));
     const first = syntax[0];
     const last = syntax.at(-1);
@@ -746,20 +760,12 @@ function clauseSelection(source: string, selected: Token[], owner: Statement, to
 /** Returns replacement text for the selected offsets in the original document. */
 export function formatSqlSelection(source: string, start: number, end: number, options: Partial<FormatterSettings> = {}): FormatResult {
     const input = source.slice(start, end);
-    if (!input.trim() || ignoresFile(source)) return { sql: input };
-    if (start === 0 && end === source.length) return formatSqlResult(source, options);
+    if (!input.trim()) return { sql: input };
+    if (start === 0 && end === source.length) return formatWithEol(source, options, { overrideIgnore: true });
     try {
         const inputTokens = tokenize(source);
         assertSqlMode(inputTokens);
         const { parts, tokens } = parse(inputTokens, source);
-        for (const part of parts) {
-            if ('kind' in part || !part.ignored) continue;
-            const ignored = part.ignored;
-            if (start >= ignored.start && end <= ignored.end) return { sql: input };
-            if (start < ignored.end && ignored.start < end && (start > ignored.start || end < ignored.end)) {
-                throw new SqlFormatError('The selection cuts through an ignored SQL statement.');
-            }
-        }
         if (inputTokens.some(token => token.kind === 'directive')) {
             throw new SqlFormatError('Format the whole document when it contains DELIMITER directives.');
         }
@@ -787,7 +793,7 @@ export function formatSqlSelection(source: string, start: number, end: number, o
         let formatted: string;
         if (touched.every(statement => start <= statement.beginning && end >= statement.contentEnd)) {
             if (statements.some(statement => statement.end > end)) settings.trailingSemicolon = 'preserve';
-            const result = formatWithEol(source.slice(first, last), settings, true, source.match(/\r\n|\r|\n/)?.[0]);
+            const result = formatWithEol(source.slice(first, last), settings, selectionBehavior, source.match(/\r\n|\r|\n/)?.[0]);
             if (result.error) throw new SqlFormatError(result.error);
             formatted = result.sql;
         } else if (touched.length === 1) {

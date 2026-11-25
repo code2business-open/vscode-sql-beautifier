@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { defaults, FormatterSettings } from './configuration/settings';
-import { formatSqlSelection } from './formatter/formatter';
+import { formatSqlResult, formatSqlSelection } from './formatter/formatter';
 
 const command = 'sqlBeautifier.formatSql';
 const selectionCommand = 'sqlBeautifier.formatSelection';
@@ -19,9 +19,16 @@ function rangeFor(document: vscode.TextDocument): vscode.Range {
     return new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
 }
 
-function formatRanges(document: vscode.TextDocument, ranges: vscode.Range[]): { edits: vscode.TextEdit[]; error?: string } {
+function formatRanges(document: vscode.TextDocument, ranges?: vscode.Range[]): { edits: vscode.TextEdit[]; error?: string } {
     const source = document.getText();
     const settings = settingsFor(document);
+    if (!ranges) {
+        const result = formatSqlResult(source, settings);
+        return {
+            edits: result.sql === source ? [] : [vscode.TextEdit.replace(rangeFor(document), result.sql)],
+            error: result.error,
+        };
+    }
     const edits: vscode.TextEdit[] = [];
     for (const range of ranges) {
         const start = document.offsetAt(range.start);
@@ -37,7 +44,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const output = vscode.window.createOutputChannel('SQL Beautifier Pro');
     const selector: vscode.DocumentSelector = { language: 'sql' };
 
-    function getEdits(document: vscode.TextDocument, ranges: vscode.Range[]): vscode.TextEdit[] {
+    function getEdits(document: vscode.TextDocument, ranges?: vscode.Range[]): vscode.TextEdit[] {
         const result = formatRanges(document, ranges);
         if (result.error) output.appendLine(result.error);
         return result.edits;
@@ -48,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!editor || editor.document.languageId !== 'sql') return;
         const selections = editor.selections.filter(selection => !selection.isEmpty);
         if (selectionOnly && !selections.length) return;
-        const ranges = selections.length ? selections : [rangeFor(editor.document)];
+        const ranges = selections.length ? selections : undefined;
         const { edits, error } = formatRanges(editor.document, ranges);
         if (error) {
             output.appendLine(error);
@@ -65,7 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
         output,
         vscode.languages.registerDocumentFormattingEditProvider(selector, {
             provideDocumentFormattingEdits(document, _options, token) {
-                return token.isCancellationRequested ? [] : getEdits(document, [rangeFor(document)]);
+                return token.isCancellationRequested ? [] : getEdits(document);
             },
         }),
         vscode.languages.registerDocumentRangeFormattingEditProvider(selector, {
