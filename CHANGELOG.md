@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Add an icon for SQL Beautifier Pro in the VS Code Extensions view.
+
 ## 0.1.1
 
 - Separate consecutive statements with one blank line.
