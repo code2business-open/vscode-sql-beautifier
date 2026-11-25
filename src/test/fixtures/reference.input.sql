@@ -1,0 +1,1 @@
+with credits_to_release as (select customer,sum(`value`) amount from cash where type='c' and `deadline` between '2026-11-30' and '2026-11-30 23:59:59' group by customer) select c.id ID,c.name NOME,c.user LOGIN,s.amount VALOR,sum(s.amount) over(order by c.id rows unbounded preceding) TOTAL from credits_to_release s left join customer c on c.id=s.customer order by c.id;

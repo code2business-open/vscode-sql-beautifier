@@ -1,0 +1,194 @@
+{
+  "name": "sql-beautifier-pro",
+  "displayName": "SQL Beautifier Pro",
+  "description": "A local, token-aware SQL formatter for MySQL and MariaDB.",
+  "version": "0.1.1",
+  "publisher": "sql-beautifier-pro",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Formatters"
+  ],
+  "activationEvents": [
+    "onLanguage:sql"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "npm run build && node --test dist/test/formatter.test.js",
+    "vscode:prepublish": "npm run build",
+    "package": "vsce package --allow-missing-repository --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "~1.85.0",
+    "@vscode/vsce": "^3.7.0",
+    "typescript": "~5.9.3"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "sqlBeautifier.formatSql",
+        "title": "Format SQL",
+        "category": "SQL Beautifier",
+        "enablement": "editorLangId == sql && !editorReadonly"
+      },
+      {
+        "command": "sqlBeautifier.formatSelection",
+        "title": "Format Selection",
+        "category": "SQL Beautifier",
+        "enablement": "editorLangId == sql && editorHasSelection && !editorReadonly"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sqlBeautifier.formatSql",
+          "when": "editorLangId == sql && !editorReadonly",
+          "group": "1_modification@9"
+        },
+        {
+          "command": "sqlBeautifier.formatSelection",
+          "when": "editorLangId == sql && editorHasSelection && !editorReadonly",
+          "group": "1_modification@10"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sqlBeautifier.formatSelection",
+          "when": "editorLangId == sql && editorHasSelection && !editorReadonly"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SQL Beautifier",
+      "properties": {
+        "sqlBeautifier.dialect": {
+          "type": "string",
+          "default": "mysql",
+          "description": "SQL dialect.",
+          "scope": "language-overridable",
+          "enum": [
+            "mysql",
+            "mariadb"
+          ]
+        },
+        "sqlBeautifier.indentSize": {
+          "type": "integer",
+          "default": 4,
+          "description": "Spaces per indentation level and display width of a tab.",
+          "scope": "language-overridable",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "sqlBeautifier.useTabs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Indent with tabs.",
+          "scope": "language-overridable"
+        },
+        "sqlBeautifier.keywordCase": {
+          "type": "string",
+          "default": "upper",
+          "description": "Case of SQL keywords.",
+          "scope": "language-overridable",
+          "enum": [
+            "upper",
+            "lower",
+            "preserve"
+          ]
+        },
+        "sqlBeautifier.functionCase": {
+          "type": "string",
+          "default": "upper",
+          "description": "Case of recognized built-in functions.",
+          "scope": "language-overridable",
+          "enum": [
+            "upper",
+            "lower",
+            "preserve"
+          ]
+        },
+        "sqlBeautifier.identifierCase": {
+          "type": "string",
+          "default": "preserve",
+          "description": "Case of unquoted identifiers. Keep preserve on case-sensitive databases.",
+          "scope": "language-overridable",
+          "enum": [
+            "preserve",
+            "upper",
+            "lower"
+          ]
+        },
+        "sqlBeautifier.explicitColumnAliases": {
+          "type": "boolean",
+          "default": true,
+          "description": "Add AS to unambiguous SELECT aliases.",
+          "scope": "language-overridable"
+        },
+        "sqlBeautifier.commaPosition": {
+          "type": "string",
+          "default": "trailing",
+          "description": "Placement of commas in multiline lists.",
+          "scope": "language-overridable",
+          "enum": [
+            "trailing",
+            "leading"
+          ]
+        },
+        "sqlBeautifier.clauseContentOnNewLine": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start query clause contents on an indented line.",
+          "scope": "language-overridable"
+        },
+        "sqlBeautifier.oneColumnPerLine": {
+          "type": "boolean",
+          "default": true,
+          "description": "Place each SELECT expression on its own line.",
+          "scope": "language-overridable"
+        },
+        "sqlBeautifier.joinTableOnNewLine": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the joined table on an indented line.",
+          "scope": "language-overridable"
+        },
+        "sqlBeautifier.breakBeforeLogicalOperator": {
+          "type": "boolean",
+          "default": true,
+          "description": "Place AND and OR at the start of a continued condition.",
+          "scope": "language-overridable"
+        },
+        "sqlBeautifier.maxLineLength": {
+          "type": "integer",
+          "default": 120,
+          "description": "Preferred line width for wrapping at supported SQL boundaries.",
+          "scope": "language-overridable",
+          "minimum": 20,
+          "maximum": 500
+        },
+        "sqlBeautifier.preserveComments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep ordinary comments. MySQL hints and executable comments are always kept.",
+          "scope": "language-overridable"
+        },
+        "sqlBeautifier.trailingSemicolon": {
+          "type": "string",
+          "default": "preserve",
+          "description": "Semicolon policy for the final statement.",
+          "scope": "language-overridable",
+          "enum": [
+            "preserve",
+            "always",
+            "never"
+          ]
+        }
+      }
+    }
+  }
+}

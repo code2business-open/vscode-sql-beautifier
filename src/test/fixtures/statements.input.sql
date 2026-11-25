@@ -1,0 +1,10 @@
+start transaction; savepoint before_update;
+insert into Dest(id,notes) select id,note from Source where enabled=true;
+replace into Dest (id,notes) values (1,'x'), (2,'y');
+update Dest d join Source s on d.id=s.id set d.notes=s.note,d.flag=1 where s.id between 1 and 9 and d.flag=0;
+delete from Dest where id=5 limit 1;
+rollback to savepoint before_update; commit;
+create temporary table if not exists Work(id int primary key, notes varchar(20) not null, meta json);
+alter table Work add column extra int, drop column notes;
+create view V as select id from Work union select id from Source;
+prepare s from 'select * from Work where id = ?'; execute s using @x; deallocate prepare s;

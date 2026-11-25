@@ -1,0 +1,6 @@
+.DS_Store
+node_modules/
+dist/
+*.vsix
+!/builds/sql-beautifier-pro-0.1.0.vsix
+!/builds/sql-beautifier-pro-0.1.1.vsix
