@@ -10,16 +10,20 @@ Install the VSIX from **Extensions → … → Install from VSIX…**, or run:
 code --install-extension builds/sql-beautifier-pro.vsix
 ```
 
-Open a `.sql` file and use **Format Document** or the standard VS Code shortcut (Shift+Option+F on macOS, Shift+Alt+F on Windows, Ctrl+Shift+I on Linux). Highlight complete statements or whole clauses such as `WHERE` and `ORDER BY` and run **Format Selection**. The standard shortcut is Command+K Command+F on macOS or Ctrl+K Ctrl+F on Windows and Linux. **SQL Beautifier: Format Selection** is also available in the Command Palette and editor context menu when text is highlighted. Both commands leave the text outside the highlight untouched, including any unselected semicolon. **SQL Beautifier: Format SQL** formats the selection when present and the document otherwise.
+In a SQL editor, the standard formatting shortcut formats the highlight if there is one and the whole file otherwise. Use Shift+Option+F on macOS, Shift+Alt+F on Windows, or Ctrl+Shift+I on Linux. Highlight complete statements or whole clauses such as `WHERE` and `ORDER BY`. Selections that cut through a token or clause are rejected without edits.
 
-Consecutive top-level statements are separated by one blank line. A header line made entirely of dashes receives the space required to make it a valid MySQL line comment.
+**SQL Beautifier: Format SQL** follows the same behavior. You can also use **Format Selection** (Command+K Command+F on macOS or Ctrl+K Ctrl+F on Windows and Linux) or **SQL Beautifier: Format Selection** from the Command Palette or editor context menu. **Format Document** and **Format on Save** always apply to the whole file.
+
+Consecutive top-level statements have at least one blank line between them. Existing blank lines are preserved by default. Standalone dashed dividers before or between statements become valid MySQL line comments.
+
+Put `-- sql-beautifier-ignore` on its own line immediately before a top-level statement to keep the directive and statement as written. To skip formatting a whole file, use `-- sql-beautifier-ignore-file` as the first nonblank line. Both directives also apply to Format Selection.
 
 To select this extension as the default SQL formatter and enable format on save:
 
 ```json
 {
 	"[sql]": {
-		"editor.defaultFormatter": "sql-beautifier-pro.sql-beautifier-pro",
+		"editor.defaultFormatter": "code2business.sql-beautifier-pro",
 		"editor.formatOnSave": true
 	}
 }
@@ -45,6 +49,7 @@ All settings use the `sqlBeautifier.` prefix and can be overridden for SQL files
 | `breakBeforeLogicalOperator` | `true`     | Start continued conditions with `AND` or `OR`. Set to `false` to put operators at the ends of lines.                                     |
 | `maxLineLength`              | `120`      | Preferred width for list, JOIN, and window wrapping. Long literals, comments, and indivisible expressions can exceed this width.         |
 | `preserveComments`           | `true`     | Keep ordinary comments. Optimizer hints and executable comments are always retained.                                                     |
+| `preserveBlankLines`         | `true`     | Keep existing blank lines within and between statements and at the start and end of the document.                                       |
 | `trailingSemicolon`          | `preserve` | Use `always` or `never` for the final statement’s semicolon. Earlier terminators and custom delimiters are retained.                     |
 
 Use whole-document formatting on scripts with custom delimiters. The engine assumes standard MySQL string escaping and preserves scripts that reference `SQL_MODE`. It keeps the spelling of unnamed expressions when MySQL derives an externally visible column name from their text, such as in a derived table. It checks token boundaries and structural consistency locally. Detected incomplete or unsupported input is returned unchanged. The palette command reports the reason in a warning, and the standard formatting providers log to the **SQL Beautifier Pro** Output channel. Server-side syntax validation still belongs to MySQL or MariaDB.

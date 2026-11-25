@@ -13,6 +13,7 @@ export interface FormatterSettings {
     breakBeforeLogicalOperator: boolean;
     maxLineLength: number;
     preserveComments: boolean;
+    preserveBlankLines: boolean;
     trailingSemicolon: "preserve" | "always" | "never";
 }
 
@@ -31,5 +32,6 @@ export const defaults: Readonly<FormatterSettings> = {
     breakBeforeLogicalOperator: true,
     maxLineLength: 120,
     preserveComments: true,
+    preserveBlankLines: true,
     trailingSemicolon: "preserve",
 };

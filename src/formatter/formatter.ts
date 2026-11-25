@@ -1,6 +1,6 @@
 import { defaults, FormatterSettings } from '../configuration/settings';
-import { Writer } from './indentation';
-import { assertStatement, code, Group, implicitAlias, label, Node, parse, routineBody, Statement } from './parser';
+import { lineBreakCount, retainBlankLines, Writer } from './indentation';
+import { assertStatement, code, Group, ignoresFile, implicitAlias, label, Node, parse, routineBody, Statement } from './parser';
 import { functions, joinHeads, keywords, logical, modifiers, statementStarts, windowHeads } from './rules';
 import { isExecutableComment, isLineComment, isProtectedComment, SqlFormatError, Token, tokenize } from './tokenizer';
 
@@ -64,14 +64,16 @@ class Formatter {
     private readonly after = new Map<number, string>();
     private readonly aliases = new Set<number>();
 
-    constructor(private readonly settings: FormatterSettings, eol: string, private readonly source: string,
+    constructor(private readonly settings: FormatterSettings, private readonly eol: string, private readonly source: string,
         private readonly trace?: SelectionTrace) {
         this.writer = new Writer(settings, eol);
     }
 
-    format(tokens: Token[], inSelection = false): string {
-        assertSqlMode(tokens);
-        const parts = parse(tokens);
+    format(inputTokens: Token[], inSelection = false): string {
+        if (inputTokens.length === 0) return this.source;
+        assertSqlMode(inputTokens);
+        const { parts, tokens } = parse(inputTokens, this.source);
+        const containsIgnored = parts.some(part => !('kind' in part) && part.ignored);
         const lastStatement = parts.findLast(part => !('kind' in part) && hasStatementContent(part.nodes));
         const adjacent = new Set<number>();
         if (inSelection && parts.some(part => 'kind' in part || part.customDelimiter)) {
@@ -100,9 +102,28 @@ class Formatter {
             precededByStatement ||= substantive;
         }
 
-        const rendered = this.writer.finish();
-        if (this.trace) this.trace.lineStarts = this.writer.lineStarts();
-        const actual = tokenize(rendered);
+        let sql = this.writer.finish();
+        let starts = this.writer.lineStarts();
+        const align = (output: string): Map<number, Span> => {
+            const actual = tokenize(output);
+            const lexemes = containsIgnored ? parse(actual, output).tokens : actual;
+            return this.matchTokens(tokens, lexemes);
+        };
+        let spans = align(sql);
+        if (this.settings.preserveBlankLines) {
+            const retained = retainBlankLines(this.source, tokens, spans, sql, starts, this.eol, !this.trace);
+            if (retained.sql !== sql) spans = align(retained.sql);
+            ({ sql, lineStarts: starts } = retained);
+        }
+        if (this.trace) {
+            this.trace.output = spans;
+            this.trace.lineStarts = starts;
+        }
+        return sql;
+    }
+
+    private matchTokens(tokens: Token[], actual: Token[]): Map<number, Span> {
+        const spans = new Map<number, Span>();
         let i = 0;
         for (const token of tokens) {
             const start = i;
@@ -114,14 +135,21 @@ class Formatter {
                     throw new SqlFormatError('Formatting would change SQL token boundaries.');
                 }
             }
-            if (i > start) this.trace?.output.set(token.start, { start: actual[start].start, end: actual[i - 1].end });
+            if (i > start) spans.set(token.start, { start: actual[start].start, end: actual[i - 1].end });
         }
         if (i !== actual.length) throw new SqlFormatError('Formatting would add unexpected SQL tokens.');
-        return rendered;
+        return spans;
     }
 
     private statement(part: Statement, last: boolean, adjacent: Set<number>): void {
         const nodes = part.nodes.filter(node => node.kind === 'group' || !adjacent.has(node.start));
+        if (part.ignored) {
+            const prefix = nodes.slice(0, nodes.indexOf(part.ignored.directive));
+            this.sequence(prefix, 0, 'expression');
+            this.writer.newline();
+            this.writer.write(this.source.slice(part.ignored.start, part.ignored.end), 0);
+            return;
+        }
         assertStatement(nodes);
         const routine = routineBody(nodes);
         const lastContent = nodes.findLastIndex(node => node.kind !== 'comment' || isExecutableComment(node));
@@ -627,7 +655,7 @@ class Formatter {
             return;
         }
         if (token.lineBreakBefore && !isProtectedComment(token)) this.writer.newline();
-        if (token.headerDivider) this.replacements.set(token.start, `-- ${token.text.slice(2)}`);
+        if (token.bareDivider) this.replacements.set(token.start, `-- ${token.text.slice(2)}`);
         this.writeToken(token, level, true);
         if (isLineComment(token)) this.writer.newline();
     }
@@ -645,6 +673,7 @@ function settingsWithDefaults(options: Partial<FormatterSettings>): FormatterSet
 }
 
 function formatWithEol(input: string, options: Partial<FormatterSettings>, inSelection: boolean, preferredEol?: string): FormatResult {
+    if (!inSelection && ignoresFile(input)) return { sql: input };
     try {
         const settings = settingsWithDefaults(options);
         const bom = input.startsWith('\uFEFF') ? '\uFEFF' : '';
@@ -655,7 +684,8 @@ function formatWithEol(input: string, options: Partial<FormatterSettings>, inSel
         const output = new Formatter(settings, eol, source).format(tokens, inSelection);
         const repeated = new Formatter(settings, eol, output).format(tokenize(output), inSelection);
         if (output !== repeated) throw new SqlFormatError('Formatting this SQL would produce an unstable layout.');
-        const finalNewline = output && /(?:\r\n|\r|\n)[ \t\r\n]*$/.test(source) ? eol : '';
+        const finalNewline = !settings.preserveBlankLines && output
+            && /(?:\r\n|\r|\n)[ \t\r\n]*$/.test(source) && !/(?:\r\n|\r|\n)[ \t\r\n]*$/.test(output) ? eol : '';
         return { sql: bom + output + finalNewline };
     } catch (error) {
         if (error instanceof SqlFormatError) return { sql: input, error: error.message };
@@ -716,12 +746,21 @@ function clauseSelection(source: string, selected: Token[], owner: Statement, to
 /** Returns replacement text for the selected offsets in the original document. */
 export function formatSqlSelection(source: string, start: number, end: number, options: Partial<FormatterSettings> = {}): FormatResult {
     const input = source.slice(start, end);
-    if (!input.trim()) return { sql: input };
+    if (!input.trim() || ignoresFile(source)) return { sql: input };
     if (start === 0 && end === source.length) return formatSqlResult(source, options);
     try {
-        const tokens = tokenize(source);
-        assertSqlMode(tokens);
-        if (tokens.some(token => token.kind === 'directive')) {
+        const inputTokens = tokenize(source);
+        assertSqlMode(inputTokens);
+        const { parts, tokens } = parse(inputTokens, source);
+        for (const part of parts) {
+            if ('kind' in part || !part.ignored) continue;
+            const ignored = part.ignored;
+            if (start >= ignored.start && end <= ignored.end) return { sql: input };
+            if (start < ignored.end && ignored.start < end && (start > ignored.start || end < ignored.end)) {
+                throw new SqlFormatError('The selection cuts through an ignored SQL statement.');
+            }
+        }
+        if (inputTokens.some(token => token.kind === 'directive')) {
             throw new SqlFormatError('Format the whole document when it contains DELIMITER directives.');
         }
         const cutsBoundary = (token: Token, from: number, to: number): boolean =>
@@ -730,7 +769,7 @@ export function formatSqlSelection(source: string, start: number, end: number, o
         const selected = tokens.filter(token => token.start >= start && token.end <= end);
         if (!selected.length) return { sql: input };
 
-        const statements = parse(tokens).flatMap(part => {
+        const statements = parts.flatMap(part => {
             if ('kind' in part) return [];
             const syntax = part.nodes.filter(node => node.kind !== 'comment' || isExecutableComment(node));
             return syntax.length ? [{
@@ -758,7 +797,8 @@ export function formatSqlSelection(source: string, start: number, end: number, o
         }
 
         const after = first + formatted.length;
-        const result = tokenize(source.slice(0, first) + formatted + source.slice(last));
+        const updated = source.slice(0, first) + formatted + source.slice(last);
+        const result = parse(tokenize(updated), updated).tokens;
         const exterior = (list: Token[], from: number, to: number): string =>
             JSON.stringify(list.filter(token => token.end <= from || token.start >= to).map(token => [token.kind, token.text]));
         if (result.some(token => cutsBoundary(token, first, after))

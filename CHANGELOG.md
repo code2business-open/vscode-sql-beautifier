@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.4
+
+- Preserve existing blank lines by default and allow disabling it with `sqlBeautifier.preserveBlankLines`.
+- Support ignore comments for one statement or an entire file.
+- Update the documented VS Code default formatter ID.
+- Make the standard formatting shortcut format only highlighted SQL when a selection is active.
+
+## 0.1.3
+
+- Format SQL scripts with dashed section dividers between statements.
+
 ## 0.1.2
 
 - Add an icon for SQL Beautifier Pro in the VS Code Extensions view.

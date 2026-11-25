@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { defaults, FormatterSettings } from '../configuration/settings';
 import { formatSql, formatSqlResult, formatSqlSelection } from '../formatter/formatter';
+import { parse } from '../formatter/parser';
 import { tokenize } from '../formatter/tokenizer';
 
 function fixture(name: string, variant: 'input' | 'expected'): string {
@@ -179,20 +180,90 @@ test('retains nonreserved keywords used as identifiers', () => {
 test('uses one blank line between top-level statements and anchors their comments', () => {
     const input = 'select 1;select 2; -- previous\r\n\r\n\r\n-- next\r\nselect 3;\r\n-- end\r\n';
     const expected = 'SELECT\r\n    1;\r\n\r\nSELECT\r\n    2; -- previous\r\n\r\n-- next\r\nSELECT\r\n    3;\r\n-- end\r\n';
-    assert.equal(formatSql(input), expected);
+    assert.equal(formatSql(input, { preserveBlankLines: false }), expected);
+    assert.equal(formatSql(input), expected.replace('-- previous\r\n', '-- previous\r\n\r\n'));
     assert.equal(formatSql(expected), expected);
     assert.equal(formatSql('select 1 union all select 2;'), 'SELECT\n    1\nUNION ALL\nSELECT\n    2;');
 });
 
-test('normalizes only header dividers and keeps minus operators inside queries', () => {
+test('retains blank lines at document edges and between tokens by default', () => {
+    const input = '\r\n \r\nselect 1,\r\n\r\n2;\r\n\r\n\r\n';
+    const expected = '\r\n\r\nSELECT\r\n    1,\r\n\r\n    2;\r\n\r\n\r\n';
+    assert.deepEqual(formatSqlResult(input), { sql: expected });
+    assert.equal(formatSql(expected), expected);
+    assert.equal(formatSql(input, { preserveBlankLines: false }), 'SELECT\r\n    1,\r\n    2;\r\n');
+    const removed = 'select a\n\n-- note\n\nfrom t;';
+    assert.equal(formatSql(removed, { preserveComments: false }), 'SELECT\n    a\n\n\nFROM\n    t;');
+});
+
+test('keeps literal and block comment contents when removing blank lines', () => {
+    const input = "select 'a\n\nb' as x, /* a\n\nb */\n\n2;";
+    const output = formatSql(input, { preserveBlankLines: false });
+    assert.match(output, /'a\n\nb'/);
+    assert.match(output, /\/\* a\n\nb \*\//);
+    assert.doesNotMatch(output, /\*\/\n\n/);
+});
+
+test('file ignore applies before tokenizing invalid SQL, including selections', () => {
+    const input = '\uFEFF\r\n \t-- sql-beautifier-ignore-file  \r\nselect \'unterminated';
+    const settings = { preserveComments: false, preserveBlankLines: false };
+    assert.deepEqual(formatSqlResult(input, settings), { sql: input });
+    assert.deepEqual(selectText(input, "select 'unterminated", settings), { sql: "select 'unterminated" });
+    const late = 'select 1;\n-- sql-beautifier-ignore-file\nselect 2;';
+    assert.equal(formatSql(late), 'SELECT\n    1;\n\n-- sql-beautifier-ignore-file\nSELECT\n    2;');
+});
+
+test('statement ignore preserves source bytes and formats neighboring statements', () => {
+    const ignored = '  \t-- sql-beautifier-ignore  \r\n  select     1\n\n ;';
+    const input = 'select 0;\r\n' + ignored + '\r\nselect 2;';
+    const options = { preserveComments: false, preserveBlankLines: false };
+    const expected = 'SELECT\r\n    0;\r\n\r\n' + ignored + '\r\n\r\nSELECT\r\n    2;';
+    assert.deepEqual(formatSqlResult(input, options), { sql: expected });
+    assert.equal(formatSql(expected, options), expected);
+    const eof = '-- sql-beautifier-ignore\n select 1    \n\n  ';
+    assert.equal(formatSql(eof, { ...options, trailingSemicolon: 'always' }), eof);
+    const unsupported = '-- sql-beautifier-ignore\nunsupported   statement;';
+    assert.equal(formatSql(unsupported + '\nselect 2;'), unsupported + '\n\nSELECT\n    2;');
+});
+
+test('only standalone statements are opted out', () => {
+    assert.equal(formatSql("select '\n-- sql-beautifier-ignore\n' as x;"), "SELECT\n    '\n-- sql-beautifier-ignore\n' AS x;");
+    assert.equal(formatSql('select 1; -- sql-beautifier-ignore\nselect 2;'),
+        'SELECT\n    1; -- sql-beautifier-ignore\n\nSELECT\n    2;');
+    const routine = 'DELIMITER $$\n-- sql-beautifier-ignore\ncreate procedure p() begin select 1; end$$\nDELIMITER ;\nselect 2;';
+    assert.deepEqual(formatSqlResult(routine), {
+        sql: 'DELIMITER $$\n-- sql-beautifier-ignore\ncreate procedure p() begin select 1; end$$\nDELIMITER ;\nSELECT\n    2;',
+    });
+});
+
+test('normalizes header dividers and keeps minus operators inside queries', () => {
     assert.equal(formatSql('-- Title\r\n  --------  \r\nselect 7----2;'),
         '-- Title\r\n-- ------  \r\nSELECT\r\n    7 - ---2;');
     assert.equal(formatSql('-- Title\n--------\nselect 7----2;', { preserveComments: false }), 'SELECT\n    7 - ---2;');
     const expression = 'select 7 -\n----2;';
     const signature = (sql: string) => tokenize(sql).map(token => [token.kind, token.text.toUpperCase()]);
     assert.deepEqual(signature(formatSql(expression)), signature(expression));
-    assert.ok(tokenize('select 7\n----\n2;').some(token => token.kind === 'operator' && token.text === '-'));
-    assert.ok(tokenize('select 7\n----\n2;').every(token => !token.headerDivider));
+    const standalone = 'select 7\n----\n2;';
+    const tokens = tokenize(standalone);
+    assert.ok(tokens.some(token => token.kind === 'operator' && token.text === '-'));
+    assert.deepEqual(parse(tokens, standalone).tokens, tokens);
+});
+
+test('normalizes section dividers between top-level statements and at EOF', () => {
+    const source = 'select 1; -- prior\r\n  --------  \r\n-- Section\r\n---\r\nselect 2;\r\n-----';
+    const expected = 'SELECT\r\n    1; -- prior\r\n\r\n-- ------  \r\n-- Section\r\n-- -\r\nSELECT\r\n    2;\r\n-- ---';
+    assert.deepEqual(formatSqlResult(source), { sql: expected });
+    assert.equal(formatSql(expected), expected);
+    assert.equal(formatSql(source, { preserveComments: false }), 'SELECT\r\n    1;\r\n\r\nSELECT\r\n    2;');
+});
+
+test('preserves dashed custom delimiters, string contents, and routine arithmetic', () => {
+    const custom = 'DELIMITER ----\nselect 1\n----\nDELIMITER ;';
+    assert.deepEqual(formatSqlResult(custom), { sql: 'DELIMITER ----\nSELECT\n    1----\nDELIMITER ;' });
+    const routine = "create procedure p() begin select 'first\n----\nlast'; select 7\n----\n2; end;";
+    const tokens = tokenize(routine);
+    assert.deepEqual(parse(tokens, routine).tokens, tokens);
+    assert.match(formatSql(routine), /'first\n----\nlast'/);
 });
 
 function selectText(source: string, text: string, settings?: Partial<FormatterSettings>) {
@@ -200,6 +271,33 @@ function selectText(source: string, text: string, settings?: Partial<FormatterSe
     assert.ok(start >= 0);
     return formatSqlSelection(source, start, start + text.length, settings);
 }
+
+test('preserves nested clause selection spacing and surrounding text', () => {
+    const selected = 'where a=1 and b=\n\n  2';
+    const input = 'select (\n  select a from b\n  ' + selected + '\n);\nselect untouched;';
+    const expected = 'WHERE\n      a = 1\n      AND b =\n\n      2';
+    assert.deepEqual(selectText(input, selected), { sql: expected });
+    assert.deepEqual(selectText(input.replace(selected, expected), expected), { sql: expected });
+    assert.deepEqual(selectText(input, selected, { preserveBlankLines: false }), { sql: 'WHERE\n      a = 1\n      AND b = 2' });
+});
+
+test('resolves ignored regions using the full document for selections', () => {
+    const region = '  -- sql-beautifier-ignore\nselect    1;';
+    const input = 'select 0;\n' + region + '\nselect 2;\nselect 3;';
+    assert.deepEqual(selectText(input, 'select    1;'), { sql: 'select    1;' });
+    assert.deepEqual(selectText(input, 'lect    1'), { sql: 'lect    1' });
+    assert.deepEqual(selectText(input, region + '\nselect 2;'), { sql: region + '\n\nSELECT\n    2;' });
+    assert.match(selectText(input, 'select    1;\nselect 2;').error ?? '', /cuts through an ignored SQL statement/);
+});
+
+test('formats selected statements and clauses around a section divider', () => {
+    const source = 'select 1;\n--------\nselect id from t where x=1;\nselect 3;';
+    assert.deepEqual(selectText(source, 'select id from t where x=1;'), { sql: 'SELECT\n    id\nFROM\n    t\nWHERE\n    x = 1;' });
+    assert.deepEqual(selectText(source, '--------\nselect id from t where x=1;'), { sql: '-- ------\nSELECT\n    id\nFROM\n    t\nWHERE\n    x = 1;' });
+    assert.deepEqual(selectText(source, 'where x=1'), { sql: 'WHERE\n    x = 1' });
+    const insideDivider = source.indexOf('--------') + 2;
+    assert.match(formatSqlSelection(source, insideDivider, source.indexOf('select 3;')).error ?? '', /cuts through a SQL token/);
+});
 
 test('formats selected statements and keeps the unselected semicolon and CRLF', () => {
     const source = 'select 0;\r\nselect a;select b from t;\r\nselect 3;';

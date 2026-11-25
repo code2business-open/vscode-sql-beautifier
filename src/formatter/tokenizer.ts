@@ -7,7 +7,7 @@ export interface Token {
     start: number;
     end: number;
     lineBreakBefore: boolean;
-    headerDivider?: true;
+    bareDivider?: true;
 }
 
 export class SqlFormatError extends Error {}
@@ -30,8 +30,6 @@ export function tokenize(sql: string): Token[] {
     let i = 0;
     let lineHead = true;
     let lineBreakBefore = false;
-    let inHeader = true;
-    const divider = /-{3,}[ \t]*(?=\r|\n|$)/y;
 
     function quoted(at: number): number {
         const quote = sql[at];
@@ -46,10 +44,8 @@ export function tokenize(sql: string): Token[] {
         throw new SqlFormatError('Unterminated quoted identifier or string.');
     }
 
-    function take(kind: TokenKind, end: number, headerDivider?: true): void {
-        const token = { kind, text: sql.slice(i, end), start: i, end, lineBreakBefore, headerDivider };
-        tokens.push(token);
-        if (kind !== 'comment' || isProtectedComment(token)) inHeader = false;
+    function take(kind: TokenKind, end: number): void {
+        tokens.push({ kind, text: sql.slice(i, end), start: i, end, lineBreakBefore });
         i = end;
         lineBreakBefore = false;
         lineHead = false;
@@ -65,10 +61,7 @@ export function tokenize(sql: string): Token[] {
             i++;
             continue;
         }
-        divider.lastIndex = i;
-        if (inHeader && lineHead && c === '-' && divider.test(sql)) {
-            take('comment', divider.lastIndex, true);
-        } else if (lineHead && /^delimiter[ \t]/i.test(sql.slice(i, i + 10))) {
+        if (lineHead && /^delimiter[ \t]/i.test(sql.slice(i, i + 10))) {
             let end = i;
             while (end < sql.length && sql[end] !== '\n' && sql[end] !== '\r') end++;
             const value = sql.slice(i + 9, end).trim();

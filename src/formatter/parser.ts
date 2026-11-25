@@ -1,5 +1,5 @@
 import { aliasExclusions, isIdentifier, keywords, modifiers, statementStarts } from './rules';
-import { isExecutableComment, SqlFormatError, Token } from './tokenizer';
+import { isExecutableComment, isProtectedComment, SqlFormatError, Token } from './tokenizer';
 
 export interface Group {
     kind: 'group';
@@ -14,6 +14,7 @@ export interface Statement {
     nodes: Node[];
     end?: Token;
     customDelimiter: boolean;
+    ignored?: { directive: Token; start: number; end: number };
 }
 
 export type ScriptPart = Statement | Token;
@@ -51,6 +52,16 @@ const routineTypes = new Set(['PROCEDURE', 'FUNCTION', 'TRIGGER', 'EVENT']);
 const otherCreateTypes = new Set(['TABLE', 'VIEW', 'DATABASE', 'SCHEMA', 'INDEX', 'USER', 'ROLE', 'SERVER', 'TABLESPACE']);
 const endTypes = new Set(['IF', 'CASE', 'LOOP', 'REPEAT', 'WHILE']);
 
+function standaloneStart(source: string, offset: number): number | undefined {
+    while (offset > 0 && /[ \t]/.test(source[offset - 1])) offset--;
+    if (offset === 0 || source[offset - 1] === '\n' || source[offset - 1] === '\r'
+        || offset === 1 && source[0] === '\uFEFF') return offset;
+}
+
+export function ignoresFile(source: string): boolean {
+    return /^\uFEFF?(?:[ \t]*(?:\r\n|\r|\n))*[ \t]*--[ \t]+sql-beautifier-ignore-file[ \t]*(?=\r|\n|$)/i.test(source);
+}
+
 export function routineBody(nodes: Node[]): number {
     const start = nodes.findIndex(node => node.kind !== 'comment');
     if (label(nodes[start]) !== 'CREATE') return -1;
@@ -62,18 +73,29 @@ export function routineBody(nodes: Node[]): number {
     return -1;
 }
 
-export function parse(tokens: Token[]): ScriptPart[] {
+export function parse(tokens: Token[], source: string): { parts: ScriptPart[]; tokens: Token[] } {
     const nodes = groupTokens(tokens);
     const parts: ScriptPart[] = [];
+    const dividers = new Map<number, Token>();
+    const dashLine = /-{3,}[ \t]*(?=\r|\n|$)/y;
     let pending: Node[] = [];
+    let atStatementBoundary = true;
+    let ignore: Token | undefined;
     let customDelimiter = false;
     let blocks = 0;
     let cases = 0;
     let seenRoutine = false;
     let previous: Node | undefined;
-    function flush(end?: Token): void {
-        if (pending.length || end) parts.push({ nodes: pending, end, customDelimiter });
+    function flush(end?: Token, atEof = false): void {
+        if (pending.length || end) {
+            const ignored = ignore && (end || atEof) && pending.some(node => node.kind !== 'comment' || isExecutableComment(node))
+                ? { directive: ignore, start: standaloneStart(source, ignore.start)!, end: end?.end ?? source.length }
+                : undefined;
+            parts.push({ nodes: pending, end, customDelimiter, ignored });
+        }
         pending = [];
+        atStatementBoundary = true;
+        ignore = undefined;
         previous = undefined;
         seenRoutine = false;
         cases = 0;
@@ -81,6 +103,28 @@ export function parse(tokens: Token[]): ScriptPart[] {
     for (let i = 0; i < nodes.length; i++) {
         const node = nodes[i];
         const name = label(node);
+        if (atStatementBoundary && node.kind === 'operator' && name === '-') {
+            // Only the parser can tell whether a dash-only line occurs between statements.
+            dashLine.lastIndex = node.start;
+            if (dashLine.test(source) && standaloneStart(source, node.start) !== undefined) {
+                const end = dashLine.lastIndex;
+                let next = i + 1;
+                while (next < nodes.length) {
+                    const item = nodes[next];
+                    if (item.kind === 'group' || item.start >= end) break;
+                    if (item.kind !== 'operator' && item.kind !== 'comment') break;
+                    next++;
+                }
+                const remaining = nodes[next];
+                if (!remaining || (remaining.kind === 'group' ? remaining.open.start : remaining.start) >= end) {
+                    const divider: Token = { ...node, kind: 'comment', text: source.slice(node.start, end), end, bareDivider: true };
+                    dividers.set(node.start, divider);
+                    pending.push(divider);
+                    i = next - 1;
+                    continue;
+                }
+            }
+        }
         if (node.kind === 'directive') {
             if (code(pending).length) throw new SqlFormatError('DELIMITER must follow a complete statement.');
             flush();
@@ -98,7 +142,11 @@ export function parse(tokens: Token[]): ScriptPart[] {
             previous = node;
             continue;
         }
+        if (atStatementBoundary && !ignore && node.kind === 'comment'
+            && /^--[ \t]+sql-beautifier-ignore[ \t]*$/i.test(node.text)
+            && standaloneStart(source, node.start) !== undefined) ignore = node;
         pending.push(node);
+        if (node.kind !== 'comment' || isProtectedComment(node)) atStatementBoundary = false;
         if (node.kind === 'comment') continue;
         if (name === 'BEGIN' && (seenRoutine || routineBody(pending) >= 0)) {
             seenRoutine = true;
@@ -119,8 +167,17 @@ export function parse(tokens: Token[]): ScriptPart[] {
     }
     if (blocks) throw new SqlFormatError('Unclosed routine block.');
     if (customDelimiter && code(pending).length) throw new SqlFormatError('Missing custom statement terminator.');
-    flush();
-    return parts;
+    flush(undefined, true);
+    if (!dividers.size) return { parts, tokens };
+    const normalized: Token[] = [];
+    let dividerEnd = -1;
+    for (const token of tokens) {
+        if (token.start < dividerEnd) continue;
+        const divider = dividers.get(token.start);
+        if (divider) dividerEnd = divider.end;
+        normalized.push(divider ?? token);
+    }
+    return { parts, tokens: normalized };
 }
 
 function validAlias(node: Node): boolean {
